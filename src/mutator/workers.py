@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
+import stat
 import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -89,14 +91,24 @@ def new_run_dir(root: Path) -> Path:
 def symlink(link: Path, target: Path) -> None:
     link.parent.mkdir(parents=True, exist_ok=True)
     if link.is_symlink() or link.exists():
-        link.unlink()
-    link.symlink_to(target.resolve())
+        delete_tree(link)
+    try:
+        link.symlink_to(target.resolve())
+    except OSError:
+        # Windows without Developer Mode cannot create symlinks. Copy instead:
+        # a worker of real copies has no link that cleanup could follow out.
+        if os.name != "nt":
+            raise
+        if target.is_dir():
+            shutil.copytree(target, link, symlinks=True)
+        else:
+            shutil.copy2(target, link)
 
 
 def delete_tree(path: Path) -> None:
     """Remove a worker tree without following a link into the real project."""
 
-    if path.is_symlink():
+    if path.is_symlink() or getattr(path, "is_junction", lambda: False)():
         path.unlink()
         return
     if not path.exists():
@@ -106,6 +118,8 @@ def delete_tree(path: Path) -> None:
             delete_tree(child)
         path.rmdir()
         return
+    if os.name == "nt":
+        os.chmod(path, stat.S_IWRITE)  # copied read-only files, e.g. git objects
     path.unlink()
 
 
